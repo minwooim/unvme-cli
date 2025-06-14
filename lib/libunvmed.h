@@ -323,6 +323,19 @@ static inline bool unvmed_sq_enabled(struct unvme_sq *usq)
 }
 
 /**
+ * unvmed_sq_busy - Check if a submission queue is exclusively occupied
+ * @usq: submission queue instance (&struct unvme_sq)
+ *
+ * The queue is considered busy when the associated completion queue is
+ * running in polling mode (interrupt disabled) and the submission queue's
+ * reference count (@usq->refcnt) is greater than one, meaning another job
+ * (e.g. an FIO ioengine) already owns the queue.
+ *
+ * Return: ``true`` if the queue is busy, otherwise ``false``.
+ */
+bool unvmed_sq_busy(struct unvme_sq *usq);
+
+/**
  * unvmed_sq_entry - Return a SQ entry pointer located at @db
  * @usq: submission queue instance
  * @db: doorbell value inside of queue

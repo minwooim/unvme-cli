@@ -3020,3 +3020,16 @@ int unvmed_mem_free(struct unvme *u, uint64_t iova)
 
 	return __unvmed_mem_free(u, buf);
 }
+
+bool unvmed_sq_busy(struct unvme_sq *usq)
+{
+	if (!usq)
+		return false;
+
+	/* If the completion queue has interrupt enabled, queue is not busy. */
+	if (unvmed_cq_irq_enabled(usq->ucq))
+		return false;
+
+	/* Polling mode: consider busy when refcnt > 1 (owned by other job) */
+	return atomic_load_acquire(&usq->refcnt) > 1;
+}

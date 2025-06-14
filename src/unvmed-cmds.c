@@ -1983,6 +1983,12 @@ int unvme_read(int argc, char *argv[], struct unvme_msg *msg)
 		goto out;
 	}
 
+	if (unvmed_sq_busy(usq)) {
+		unvme_pr_err("submission queue (qid=%d) is busy by another polling job\n", arg_intv(sqid));
+		ret = EBUSY;
+		goto out;
+	}
+
 	if (arg_intv(prp1_offset) >= getpagesize()) {
 		unvme_pr_err("invalid --prp1-offset\n");
 		ret = EINVAL;
@@ -2225,6 +2231,12 @@ int unvme_write(int argc, char *argv[], struct unvme_msg *msg)
 	if (!usq || !unvmed_sq_enabled(usq)) {
 		unvme_pr_err("failed to get iosq\n");
 		ret = ENOMEDIUM;
+		goto out;
+	}
+
+	if (unvmed_sq_busy(usq)) {
+		unvme_pr_err("submission queue (qid=%d) is busy by another polling job\n", arg_intv(sqid));
+		ret = EBUSY;
 		goto out;
 	}
 
@@ -2474,6 +2486,12 @@ int unvme_passthru(int argc, char *argv[], struct unvme_msg *msg)
 	if (!usq || !unvmed_sq_enabled(usq)) {
 		unvme_pr_err("failed to get iosq\n");
 		ret = ENOMEDIUM;
+		goto out;
+	}
+
+	if (unvmed_sq_busy(usq)) {
+		unvme_pr_err("submission queue (qid=%d) is busy by another polling job\n", arg_intv(sqid));
+		ret = EBUSY;
 		goto out;
 	}
 
