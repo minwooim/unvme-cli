@@ -115,7 +115,7 @@ static int unvme_set_pid(void)
 		return -EINVAL;
 	}
 
-	if (write(fd, spid, sizeof(spid)) < 0)
+	if (write(fd, spid, strlen(spid)) < 0)
 		return -1;
 
 	close(fd);

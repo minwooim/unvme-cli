@@ -31,11 +31,11 @@
 #define arg_strv(a)		((a)->sval[0])
 #define arg_filev(a)		((a)->filename[0])
 
-struct unvme_msg {
+struct __attribute__((__packed__)) unvme_msg {
 	/* msgq message type used to represent client pid */
 	long type;
 
-	struct {
+	struct __attribute__((__packed__)) {
 		/*
 		 * Request message from client to daemon
 		 */
