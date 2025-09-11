@@ -114,13 +114,26 @@ static bool unvmed_ctrl_set_state(struct unvme *u, enum unvme_state state)
 static int unvmed_vcq_push(struct unvme *u, struct unvme_vcq *q,
 			   struct nvme_cqe *cqe)
 {
-	uint16_t tail = atomic_load_acquire(&q->tail);
+	uint16_t local_tail, new_local_tail;
+	uint16_t head;
 
-	if ((tail + 1) % q->qsize == atomic_load_acquire(&q->head))
-		return -EAGAIN;
+	/* Use CAS to atomically grab a slot in the local_tail */
+	do {
+		local_tail = atomic_load_acquire(&q->local_tail);
+		head = atomic_load_acquire(&q->head);
+		new_local_tail = (local_tail + 1) % q->qsize;
 
-	q->cqe[tail] = *cqe;
-	atomic_store_release(&q->tail, (tail + 1) % q->qsize);
+		/* Check if queue is full */
+		if (new_local_tail == head)
+			return -EAGAIN;
+
+	} while (!atomic_cmpxchg(&q->local_tail, local_tail, new_local_tail));
+
+	/* Place the CQE at the grabbed slot */
+	q->cqe[local_tail] = *cqe;
+
+	/* Update the real tail doorbell */
+	atomic_store_release(&q->tail, new_local_tail);
 	unvmed_log_cmd_vcq_push(cqe);
 	return 0;
 }
@@ -1235,6 +1248,7 @@ static int unvmed_vcq_init(struct unvme_vcq *vcq, uint32_t qsize)
 {
 	vcq->head = 0;
 	vcq->tail = 0;
+	vcq->local_tail = 0;
 	vcq->qsize = qsize;
 	vcq->cqe = malloc(sizeof(struct nvme_cqe) * qsize);
 

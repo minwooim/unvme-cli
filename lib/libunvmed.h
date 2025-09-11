@@ -90,6 +90,7 @@ struct unvme_vcq {
 	int qsize;
 	uint16_t head;
 	uint16_t tail;
+	uint16_t local_tail;		/* Internal local tail for lock-free multi-producer */
 
 	/* CQE array for @qsize */
 	struct nvme_cqe *cqe;
