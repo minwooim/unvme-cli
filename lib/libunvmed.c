@@ -952,24 +952,28 @@ int unvmed_init_ns(struct unvme *u, uint32_t nsid, void *identify)
 	struct __unvme_ns *ns;
 	struct unvme_ns *prev;
 	uint8_t format_idx;
+	int ret = 0;
+	bool mapped = false;
 
 	if (!id_ns) {
-		pgmap((void **)&id_ns, sizeof(struct nvme_id_ns));
-		if (!id_ns) {
+		if (pgmap((void **)&id_ns, sizeof(struct nvme_id_ns)) < 0) {
 			unvmed_log_err("failed to allocate a buffer");
 			return -1;
 		}
+		mapped = true;
 
-		__unvmed_id_ns(u, nsid, id_ns);
+		if (__unvmed_id_ns(u, nsid, id_ns)) {
+			ret = -1;
+			goto out;
+		}
 	}
 
 	prev = unvmed_ns_get(u, nsid);
 	if (!prev) {
 		ns = zmalloc(sizeof(struct __unvme_ns));
 		if (!ns) {
-			if (id_ns != identify)
-				pgunmap(id_ns, sizeof(*id_ns));
-			return -1;
+			ret = -1;
+			goto out;
 		}
 	} else {
 		int refcnt;
@@ -1008,9 +1012,10 @@ int unvmed_init_ns(struct unvme *u, uint32_t nsid, void *identify)
 
 	ns->enabled = true;
 
-	if (id_ns != identify)
+out:
+	if (mapped)
 		pgunmap(id_ns, sizeof(*id_ns));
-	return 0;
+	return ret;
 }
 
 static int __unvmed_nvm_id_ns(struct unvme *u, uint32_t nsid,
@@ -1211,7 +1216,10 @@ int unvmed_init_meta_ns(struct unvme *u, uint32_t nsid, void *nvm_id_ns)
 			goto out;
 		}
 
-		__unvmed_nvm_id_ns(u, nsid, __nvm_id_ns);
+		if (__unvmed_nvm_id_ns(u, nsid, __nvm_id_ns)) {
+			ret = -1;
+			goto out;
+		}
 	}
 
 	elbaf = le32_to_cpu(__nvm_id_ns->elbaf[ns->format_idx]);
