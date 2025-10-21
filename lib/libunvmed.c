@@ -648,10 +648,20 @@ static int unvmed_init_irq(struct unvme *u, int vector)
 		unvmed_log_err("failed to set IRQ for vector %d", vector);
 
 		unvmed_free_irq_reaper(r);
+		atomic_store_release(&r->refcnt, 0);
 		return -1;
 	}
 
-	pthread_create(&r->th, NULL, unvmed_reaper_run, (void *)r);
+	int err = pthread_create(&r->th, NULL, unvmed_reaper_run, (void *)r);
+	if (err) {
+		unvmed_log_err("failed to create IRQ reaper thread (vector=%d, err=%d)",
+				vector, err);
+		vfio_disable_irq(&u->ctrl.pci.dev, 0, u->nr_irqs);
+		unvmed_free_irq_reaper(r);
+		atomic_store_release(&r->refcnt, 0);
+		return -1;
+	}
+
 	return 0;
 }
 
@@ -717,6 +727,13 @@ static int unvmed_alloc_irqs(struct unvme *u)
 
 	u->nr_efds = u->nr_irqs;
 	u->reapers = calloc(u->nr_efds, sizeof(struct unvme_cq_reaper));
+	if (!u->reapers) {
+		free(u->efds);
+		u->efds = NULL;
+		u->nr_efds = 0;
+		errno = ENOMEM;
+		return -1;
+	}
 	unvmed_log_info("%d IRQ vectors are allocated (supported=%d)",
 			u->nr_irqs, u->irq_info.count);
 	return 0;
