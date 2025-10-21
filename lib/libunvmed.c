@@ -922,6 +922,7 @@ static int __unvmed_id_ns(struct unvme *u, uint32_t nsid,
 				"(errno=%d \"%s\")", errno, strerror(errno));
 
 		unvmed_sq_exit(asq);
+		unvmed_sq_put(u, asq);
 		return -1;
 	}
 
@@ -2537,6 +2538,7 @@ static int unvmed_delete_cq(struct unvme *u, uint32_t qid)
 				"(errno=%d \"%s\")", errno, strerror(errno));
 
 		unvmed_sq_exit(asq);
+		unvmed_sq_put(u, asq);
 		return -1;
 	}
 
@@ -2562,7 +2564,6 @@ static int unvmed_delete_cq(struct unvme *u, uint32_t qid)
 		errno = EILSEQ;
 
 	unvmed_cmd_put(cmd);
-	unvmed_sq_exit(asq);
 	unvmed_sq_put(u, asq);
 	return ret;
 }
