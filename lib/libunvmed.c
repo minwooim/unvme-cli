@@ -1513,6 +1513,11 @@ static struct unvme_sq *unvmed_init_usq(struct unvme *u, uint32_t qid,
 		pthread_spin_init(&usq->lock, 0);
 
 		usq->cmds = calloc(qsize, sizeof(struct unvme_cmd));
+		if (!usq->cmds) {
+			free(usq);
+			errno = ENOMEM;
+			return NULL;
+		}
 
 		/*
 		 * libvfn manages @rq instances for (@qsize-1).
@@ -1524,8 +1529,10 @@ static struct unvme_sq *unvmed_init_usq(struct unvme *u, uint32_t qid,
 		}
 
 		if (unvmed_vcq_init(&usq->vcq, qsize)) {
-			if (alloc)
-				free(usq);
+			unvmed_cid_free(usq);
+			free(usq->cmds);
+			free(usq);
+			errno = ENOMEM;
 			return NULL;
 		}
 
