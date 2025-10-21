@@ -155,7 +155,7 @@ static int unvmed_create_logfile(const char *logfile)
 
 	fd = creat(logfile, 0644);
 	if (fd < 0)
-		return -EINVAL;
+		return -errno;
 
 	return fd;
 }
