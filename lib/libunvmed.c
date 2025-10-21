@@ -3328,12 +3328,14 @@ int unvmed_flr(struct unvme *u)
 
 	if (!(cap & (1 << 28))) {
 		unvmed_log_err("flr not supported");
-		ret = ENOTSUP;
+		errno = ENOTSUP;
+		ret = -1;
 		goto close;
 	}
 
 	if (!unvmed_ctrl_set_state(u, UNVME_RESETTING)) {
 		errno = EBUSY;
+		ret = -1;
 		goto close;
 	}
 
@@ -3359,6 +3361,7 @@ int unvmed_flr(struct unvme *u)
 	usleep(100 * 1000);
 	if (unvmed_pci_wait_reset(u) < 0) {
 		unvmed_log_err("failed to wait for PCI to be reset");
+		ret = -1;
 		goto close;
 	}
 
@@ -3370,6 +3373,7 @@ int unvmed_flr(struct unvme *u)
 
 	unvmed_reset_ctx(u);
 	unvmed_ctrl_set_state(u, UNVME_DISABLED);
+	ret = 0;
 close:
 	close(fd);
 free:
@@ -3486,7 +3490,8 @@ int unvmed_hot_reset(struct unvme *u)
 
 	if (!unvmed_ctrl_set_state(u, UNVME_RESETTING)) {
 		errno = EBUSY;
-		return -1;
+		ret = -1;
+		goto close;
 	}
 
 	ret = pread(fd, &control, 2, 0x3E);
@@ -3514,6 +3519,7 @@ int unvmed_hot_reset(struct unvme *u)
 	usleep(100 * 1000);
 	if (unvmed_pci_wait_reset(u) < 0) {
 		unvmed_log_err("failed to wait for PCI to be reset");
+		ret = -1;
 		goto close;
 	}
 
@@ -3557,7 +3563,8 @@ int unvmed_link_disable(struct unvme *u)
 
 	if (!unvmed_ctrl_set_state(u, UNVME_RESETTING)) {
 		errno = EBUSY;
-		return -1;
+		ret = -1;
+		goto close;
 	}
 
 	pcie_offset = unvmed_get_pcie_cap_offset(dsp);
@@ -3591,6 +3598,7 @@ int unvmed_link_disable(struct unvme *u)
 	usleep(100 * 1000);
 	if (unvmed_pci_wait_reset(u) < 0) {
 		unvmed_log_err("failed to wait for PCI to be reset");
+		ret = -1;
 		goto close;
 	}
 
@@ -3602,11 +3610,12 @@ int unvmed_link_disable(struct unvme *u)
 
 	unvmed_reset_ctx(u);
 	unvmed_ctrl_set_state(u, UNVME_DISABLED);
+	ret = 0;
 close:
 	close(fd);
 free:
 	free(path);
-	return 0;
+	return ret;
 }
 
 int unvmed_ctx_init(struct unvme *u)
