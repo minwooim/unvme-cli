@@ -399,12 +399,12 @@ struct libunvmed_data {
 	uint64_t trim_iomem_iova;
 
 	/*
-	 * Target I/O submission queue instance per a thread.  A submission
-	 * queue is fully dedicated to a thread(job), which means totally
-	 * non-sharable.
+	 * Target I/O submission queue instance per a thread.  With VSQ support,
+	 * multiple threads can now share a single USQ through per-thread VSQs.
 	 */
 	struct unvme_sq *usq;
 	struct unvme_cq *ucq;
+	struct unvme_vsq *vsq;	/* Per-thread virtual submission queue */
 
 	unsigned int nr_queued;
 	struct nvme_cqe *cqes;
@@ -845,17 +845,9 @@ static int fio_libunvmed_open_file(struct thread_data *td, struct fio_file *f)
 	}
 
 	/*
-	 * unvmed daemon itself has grabbed the first usq instance and the
-	 * very first fio job should grab the second refcnt, and the following
-	 * attempts should be rejected until libunvmed supports multi-jobs for
-	 * a single queue.
+	 * With VSQ support, multiple threads can now share a single USQ.
+	 * Each thread gets its own VSQ for lock-free submission.
 	 */
-	if (atomic_load_acquire(&ld->usq->refcnt) > 2) {
-		libunvmed_log("submission queue (--sqid=%d) already in use\n", o->sqid);
-		unvmed_sq_put(u, ld->usq);
-		pthread_mutex_unlock(&g_serialize);
-		return -1;
-	}
 
 	ld->ucq = unvmed_cq_get(u, unvmed_sq_cqid(ld->usq));
 	if (!ld->ucq) {
@@ -916,8 +908,26 @@ static int fio_libunvmed_open_file(struct thread_data *td, struct fio_file *f)
 		goto out;
 	}
 
+	/*
+	 * Allocate per-thread VSQ for lock-free submission.
+	 * VSQ size is set to iodepth to accommodate all in-flight commands.
+	 */
+	ld->vsq = unvmed_vsq_alloc(ld->usq, td->o.iodepth);
+	if (!ld->vsq) {
+		libunvmed_log("failed to allocate VSQ (qsize=%d)\n", td->o.iodepth);
+		ret = -1;
+		goto out;
+	}
+
+	libunvmed_log("VSQ allocated for thread %d (qsize=%d, sqid=%d)\n",
+		      td->thread_number, td->o.iodepth, o->sqid);
+
 out:
 	if (ret) {
+		if (ld->vsq) {
+			unvmed_vsq_free(ld->vsq);
+			ld->vsq = NULL;
+		}
 		unvmed_cq_put(u, ld->ucq);
 		unvmed_sq_put(u, ld->usq);
 	}
@@ -948,6 +958,13 @@ static int fio_libunvmed_close_file(struct thread_data *td,
 		ret = unvmed_unmap_vaddr(ld->u, td->orig_buffer);
 		if (ret)
 			libunvmed_log("failed to unmap io_u buffers from iommu\n");
+	}
+
+	/* Free per-thread VSQ */
+	if (ld->vsq) {
+		libunvmed_log("Freeing VSQ for thread %d\n", td->thread_number);
+		unvmed_vsq_free(ld->vsq);
+		ld->vsq = NULL;
 	}
 
 	unvmed_cq_put(ld->u, ld->ucq);
@@ -1368,7 +1385,13 @@ static enum fio_q_status fio_libunvmed_rw(struct thread_data *td,
 	}
 
 	cmd->opaque = io_u;
-	unvmed_cmd_post(cmd, (union nvme_cmd *)&sqe, UNVMED_CMD_F_NODB);
+
+	/* Post to per-thread VSQ instead of directly to SQ */
+	if (unvmed_vsq_post(ld->vsq, cmd, (union nvme_cmd *)&sqe, 0)) {
+		unvmed_cmd_put(cmd);
+		return -errno;
+	}
+
 	return FIO_Q_QUEUED;
 }
 
@@ -1417,7 +1440,13 @@ static enum fio_q_status fio_libunvmed_trim(struct thread_data *td,
 	}
 
 	cmd->opaque = io_u;
-	unvmed_cmd_post(cmd, (union nvme_cmd *)&sqe, UNVMED_CMD_F_NODB);
+
+	/* Post to per-thread VSQ instead of directly to SQ */
+	if (unvmed_vsq_post(ld->vsq, cmd, (union nvme_cmd *)&sqe, 0)) {
+		unvmed_cmd_put(cmd);
+		return -errno;
+	}
+
 	return FIO_Q_QUEUED;
 }
 
@@ -1438,7 +1467,13 @@ static enum fio_q_status fio_libunvmed_fsync(struct thread_data *td,
 	sqe.nsid = cpu_to_le32(ns->nsid);
 
 	cmd->opaque = io_u;
-	unvmed_cmd_post(cmd, (union nvme_cmd *)&sqe, UNVMED_CMD_F_NODB);
+
+	/* Post to per-thread VSQ instead of directly to SQ */
+	if (unvmed_vsq_post(ld->vsq, cmd, (union nvme_cmd *)&sqe, 0)) {
+		unvmed_cmd_put(cmd);
+		return -errno;
+	}
+
 	return FIO_Q_QUEUED;
 }
 
@@ -1451,13 +1486,11 @@ static enum fio_q_status fio_libunvmed_queue(struct thread_data *td,
 	if (ld->nr_queued == td->o.iodepth)
 		return FIO_Q_BUSY;
 
-	if (unvmed_sq_try_enter(ld->usq))
-		return FIO_Q_BUSY;
-
-	if (!unvmed_sq_ready(ld->usq)) {
-		unvmed_sq_exit(ld->usq);
-		return FIO_Q_BUSY;
-	}
+	/*
+	 * With VSQ, we no longer need to acquire the USQ lock here.
+	 * Each thread posts to its own VSQ lock-free, and the worker
+	 * thread handles the actual SQ submission.
+	 */
 
 	fio_ro_check(td, io_u);
 
@@ -1473,41 +1506,28 @@ static enum fio_q_status fio_libunvmed_queue(struct thread_data *td,
 		ret = fio_libunvmed_fsync(td, io_u);
 		break;
 	default:
-		unvmed_sq_exit(ld->usq);
 		io_u->error = -ENOTSUP;
 		return FIO_Q_COMPLETED;
 	}
 
-	ld->nr_queued++;
+	if (ret == FIO_Q_QUEUED)
+		ld->nr_queued++;
 
-	unvmed_sq_exit(ld->usq);
 	return ret;
 }
 
 static int fio_libunvmed_commit(struct thread_data *td)
 {
 	struct libunvmed_data *ld = td->io_ops_data;
-	int nr_sqes;
 
-	if (unvmed_sq_try_enter(ld->usq))
-		return 0;
-
-	if (!unvmed_sq_ready(ld->usq)) {
-		/*
-		 * If @usq driver context is still alive for the current fio
-		 * application, we can go update the tail doorbell, otherwise
-		 * we should stop here.
-		 */
-		if (atomic_load_acquire(&ld->usq->refcnt) == 1) {
-			unvmed_sq_exit(ld->usq);
-			return 0;
-		}
-	}
-
-	nr_sqes = unvmed_sq_update_tail(ld->u, ld->usq);
-	unvmed_sq_exit(ld->usq);
-
-	io_u_mark_submit(td, nr_sqes);
+	/*
+	 * With VSQ, the doorbell update is handled by the VSQ worker thread.
+	 * We no longer need to update the doorbell here. The worker thread
+	 * batches doorbell updates for better performance.
+	 *
+	 * We just mark the submissions for fio's internal tracking.
+	 */
+	io_u_mark_submit(td, ld->nr_queued);
 	return 0;
 }
 

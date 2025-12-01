@@ -105,6 +105,13 @@ struct unvme_vcq {
 };
 
 /*
+ * struct unvme_vsq - Virtual Submission Queue (per-thread)
+ *
+ * Opaque structure. See libunvmed-private.h for implementation.
+ */
+struct unvme_vsq;
+
+/*
  * struct unvme_ns - Namespace instance
  * @u: unvme controller instance
  * @refcnt: reference count
@@ -169,6 +176,9 @@ struct name {			\
 	pthread_spinlock_t lock;\
 	bool enabled;		\
 	int refcnt;		\
+				\
+	/* VSQ support (implementation in libunvmed-private.h) */	\
+	void *vsq_priv;		\
 }
 
 /*
@@ -2175,5 +2185,50 @@ int unvmed_cmd_prep_detach_ns(struct unvme_cmd *cmd, uint32_t nsid,
 int unvmed_detach_ns(struct unvme_cmd *cmd, uint32_t nsid,
 		     int nr_ctrlids, uint16_t *ctrlids,
 		     struct iovec *iov, int nr_iov);
+
+/**
+ * unvmed_vsq_alloc - Allocate a Virtual Submission Queue (VSQ)
+ * @usq: underlying submission queue instance (&struct unvme_sq)
+ * @qsize: VSQ size
+ *
+ * Allocate a per-thread virtual submission queue that will be serviced by
+ * the worker thread associated with @usq. Multiple VSQs can share a single
+ * USQ, allowing multi-threaded applications to submit commands concurrently.
+ *
+ * This API is thread-safe.
+ *
+ * Return: &struct unvme_vsq on success, otherwise ``NULL`` with ``errno`` set.
+ */
+struct unvme_vsq *unvmed_vsq_alloc(struct unvme_sq *usq, uint32_t qsize);
+
+/**
+ * unvmed_vsq_free - Free a Virtual Submission Queue
+ * @vsq: virtual submission queue instance (&struct unvme_vsq)
+ *
+ * Free the given VSQ instance. Caller must ensure no commands are pending
+ * in the VSQ before calling this function.
+ *
+ * This API is thread-safe.
+ */
+void unvmed_vsq_free(struct unvme_vsq *vsq);
+
+/**
+ * unvmed_vsq_post - Post a command to a Virtual Submission Queue
+ * @vsq: virtual submission queue instance (&struct unvme_vsq)
+ * @cmd: command instance (&struct unvme_cmd)
+ * @sqe: submission queue entry (&union nvme_cmd)
+ * @flags: control flags (enum unvmed_cmd_flags)
+ *
+ * Post a command to the VSQ. The VSQ worker thread will transfer the command
+ * to the actual submission queue in a round-robin fashion. This function
+ * does not update the submission queue tail doorbell; the worker thread
+ * handles doorbell updates.
+ *
+ * This API is lock-free from the application thread's perspective.
+ *
+ * Return: ``0`` on success, otherwise ``-1`` with ``errno`` set (EAGAIN if VSQ is full).
+ */
+int unvmed_vsq_post(struct unvme_vsq *vsq, struct unvme_cmd *cmd,
+		    union nvme_cmd *sqe, unsigned long flags);
 
 #endif

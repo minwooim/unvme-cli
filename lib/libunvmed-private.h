@@ -221,4 +221,40 @@ static inline bool unvmed_timer_after(struct timespec *a, struct timespec *b)
 	return a->tv_nsec > b->tv_nsec;
 }
 
+/*
+ * VSQ (Virtual Submission Queue) private structures
+ */
+
+/* VSQ entry containing SQE and associated command */
+struct unvme_vsq_entry {
+	union nvme_cmd sqe;
+	struct unvme_cmd *cmd;
+};
+
+/* Full VSQ structure (opaque in public API) */
+struct unvme_vsq {
+	int qsize;
+	uint16_t head;
+	uint16_t tail;
+
+	/* VSQ entry array */
+	struct unvme_vsq_entry *entries;
+
+	/* Associated USQ */
+	struct unvme_sq *usq;
+
+	int refcnt;
+	struct list_node list;
+};
+
+/* VSQ private data stored in usq->vsq_priv */
+struct unvme_vsq_priv {
+	struct list_head vsq_list;
+	pthread_mutex_t vsq_lock;
+	pthread_t vsq_worker_thread;
+	bool vsq_worker_running;
+	pthread_cond_t vsq_cond;
+	pthread_mutex_t vsq_mutex;
+};
+
 #endif

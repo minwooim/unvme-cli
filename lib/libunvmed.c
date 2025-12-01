@@ -1258,6 +1258,163 @@ static void unvmed_vcq_free(struct unvme_vcq *vcq)
 	memset(vcq, 0, sizeof(struct unvme_vcq));
 }
 
+/*
+ * VSQ (Virtual Submission Queue) support
+ */
+
+/* Check if VSQ has space for new entries */
+static inline bool unvmed_vsq_full(struct unvme_vsq *vsq)
+{
+	uint16_t head = atomic_load_acquire(&vsq->head);
+	uint16_t tail = atomic_load_acquire(&vsq->tail);
+	return ((tail + 1) % vsq->qsize) == head;
+}
+
+/* Check if VSQ has any entries */
+static inline bool unvmed_vsq_empty(struct unvme_vsq *vsq)
+{
+	uint16_t head = atomic_load_acquire(&vsq->head);
+	uint16_t tail = atomic_load_acquire(&vsq->tail);
+	return head == tail;
+}
+
+/* Push SQE to VSQ (called by application thread) */
+static int unvmed_vsq_push(struct unvme_vsq *vsq, struct unvme_cmd *cmd,
+			   union nvme_cmd *sqe)
+{
+	uint16_t tail = atomic_load_acquire(&vsq->tail);
+
+	if (unvmed_vsq_full(vsq))
+		return -EAGAIN;
+
+	vsq->entries[tail].sqe = *sqe;
+	vsq->entries[tail].cmd = cmd;
+	atomic_store_release(&vsq->tail, (tail + 1) % vsq->qsize);
+
+	return 0;
+}
+
+/* Pop SQE from VSQ (called by worker thread) */
+static int unvmed_vsq_pop(struct unvme_vsq *vsq, union nvme_cmd *sqe,
+			  struct unvme_cmd **cmd)
+{
+	uint16_t head = atomic_load_acquire(&vsq->head);
+
+	if (unvmed_vsq_empty(vsq))
+		return -ENOENT;
+
+	*sqe = vsq->entries[head].sqe;
+	*cmd = vsq->entries[head].cmd;
+	atomic_store_release(&vsq->head, (head + 1) % vsq->qsize);
+
+	return 0;
+}
+
+/* VSQ worker thread function */
+static void *unvmed_vsq_worker(void *arg)
+{
+	struct unvme_sq *usq = (struct unvme_sq *)arg;
+	struct unvme_vsq_priv *priv = (struct unvme_vsq_priv *)usq->vsq_priv;
+	struct unvme_vsq *vsq;
+	union nvme_cmd sqe;
+	struct unvme_cmd *cmd;
+	int nr_processed;
+
+	while (atomic_load_acquire(&priv->vsq_worker_running)) {
+		nr_processed = 0;
+
+		/* Round-robin through all VSQs */
+		pthread_mutex_lock(&priv->vsq_lock);
+		list_for_each(&priv->vsq_list, vsq, list) {
+			/* Try to pop from this VSQ */
+			while (!unvmed_vsq_pop(vsq, &sqe, &cmd)) {
+				/* Got an entry, post it to the real SQ */
+				pthread_spin_lock(&usq->lock);
+				if (unvmed_sq_ready(usq)) {
+					unvmed_cmd_post(cmd, &sqe, UNVMED_CMD_F_NODB);
+					nr_processed++;
+				}
+				pthread_spin_unlock(&usq->lock);
+			}
+		}
+		pthread_mutex_unlock(&priv->vsq_lock);
+
+		/* If we processed any commands, update doorbell */
+		if (nr_processed > 0) {
+			pthread_spin_lock(&usq->lock);
+			if (unvmed_sq_ready(usq))
+				unvmed_sq_update_tail(usq->ucq->u, usq);
+			pthread_spin_unlock(&usq->lock);
+		}
+
+		/* Sleep if no work */
+		if (nr_processed == 0) {
+			pthread_mutex_lock(&priv->vsq_mutex);
+			pthread_cond_wait(&priv->vsq_cond, &priv->vsq_mutex);
+			pthread_mutex_unlock(&priv->vsq_mutex);
+		}
+	}
+
+	return NULL;
+}
+
+/* Initialize VSQ worker thread for a USQ */
+static int unvmed_vsq_worker_init(struct unvme_sq *usq)
+{
+	struct unvme_vsq_priv *priv;
+	int ret;
+
+	priv = calloc(1, sizeof(*priv));
+	if (!priv) {
+		errno = ENOMEM;
+		return -1;
+	}
+
+	list_head_init(&priv->vsq_list);
+	pthread_mutex_init(&priv->vsq_lock, NULL);
+	pthread_mutex_init(&priv->vsq_mutex, NULL);
+	pthread_cond_init(&priv->vsq_cond, NULL);
+	atomic_store_release(&priv->vsq_worker_running, true);
+
+	usq->vsq_priv = priv;
+
+	ret = pthread_create(&priv->vsq_worker_thread, NULL,
+			     unvmed_vsq_worker, usq);
+	if (ret) {
+		free(priv);
+		usq->vsq_priv = NULL;
+		errno = ret;
+		return -1;
+	}
+
+	return 0;
+}
+
+/* Cleanup VSQ worker thread */
+static void unvmed_vsq_worker_cleanup(struct unvme_sq *usq)
+{
+	struct unvme_vsq_priv *priv = (struct unvme_vsq_priv *)usq->vsq_priv;
+
+	if (!priv)
+		return;
+
+	atomic_store_release(&priv->vsq_worker_running, false);
+
+	/* Wake up the worker thread */
+	pthread_mutex_lock(&priv->vsq_mutex);
+	pthread_cond_signal(&priv->vsq_cond);
+	pthread_mutex_unlock(&priv->vsq_mutex);
+
+	pthread_join(priv->vsq_worker_thread, NULL);
+
+	pthread_mutex_destroy(&priv->vsq_lock);
+	pthread_mutex_destroy(&priv->vsq_mutex);
+	pthread_cond_destroy(&priv->vsq_cond);
+
+	free(priv);
+	usq->vsq_priv = NULL;
+}
+
 static int unvmed_timer_update(struct unvme_sq *usq, int sec)
 {
 	struct unvme_timer *timer = &usq->timer;
@@ -4030,5 +4187,116 @@ int unvmed_free_cq(struct unvme *u, uint16_t qid)
 	}
 
 	__unvmed_delete_cq(u, ucq);
+	return 0;
+}
+
+/* Public VSQ API */
+
+struct unvme_vsq *unvmed_vsq_alloc(struct unvme_sq *usq, uint32_t qsize)
+{
+	struct unvme_vsq *vsq;
+	struct unvme_vsq_priv *priv;
+
+	if (!usq || qsize == 0) {
+		errno = EINVAL;
+		return NULL;
+	}
+
+	vsq = calloc(1, sizeof(*vsq));
+	if (!vsq) {
+		errno = ENOMEM;
+		return NULL;
+	}
+
+	vsq->entries = calloc(qsize, sizeof(struct unvme_vsq_entry));
+	if (!vsq->entries) {
+		free(vsq);
+		errno = ENOMEM;
+		return NULL;
+	}
+
+	vsq->qsize = qsize;
+	vsq->head = 0;
+	vsq->tail = 0;
+	vsq->usq = usq;
+	vsq->refcnt = 1;
+
+	/* Initialize VSQ worker thread on first VSQ allocation */
+	if (!usq->vsq_priv) {
+		if (unvmed_vsq_worker_init(usq)) {
+			free(vsq->entries);
+			free(vsq);
+			return NULL;
+		}
+	}
+
+	priv = (struct unvme_vsq_priv *)usq->vsq_priv;
+
+	/* Add VSQ to USQ's VSQ list */
+	pthread_mutex_lock(&priv->vsq_lock);
+	list_add_tail(&priv->vsq_list, &vsq->list);
+	pthread_mutex_unlock(&priv->vsq_lock);
+
+	unvmed_log_debug("VSQ allocated (qsize=%d, usq->id=%d)", qsize, usq->id);
+	return vsq;
+}
+
+void unvmed_vsq_free(struct unvme_vsq *vsq)
+{
+	struct unvme_sq *usq;
+	struct unvme_vsq_priv *priv;
+
+	if (!vsq)
+		return;
+
+	usq = vsq->usq;
+	priv = (struct unvme_vsq_priv *)usq->vsq_priv;
+
+	if (!priv)
+		return;
+
+	/* Remove from USQ's VSQ list */
+	pthread_mutex_lock(&priv->vsq_lock);
+	list_del(&vsq->list);
+	pthread_mutex_unlock(&priv->vsq_lock);
+
+	free(vsq->entries);
+	free(vsq);
+
+	unvmed_log_debug("VSQ freed");
+}
+
+int unvmed_vsq_post(struct unvme_vsq *vsq, struct unvme_cmd *cmd,
+		    union nvme_cmd *sqe, unsigned long flags)
+{
+	struct unvme_vsq_priv *priv;
+	int ret;
+
+	if (!vsq || !cmd || !sqe) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	priv = (struct unvme_vsq_priv *)vsq->usq->vsq_priv;
+	if (!priv) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	/* Push to VSQ */
+	ret = unvmed_vsq_push(vsq, cmd, sqe);
+	if (ret) {
+		errno = -ret;
+		return -1;
+	}
+
+	/* Wake up worker thread */
+	pthread_mutex_lock(&priv->vsq_mutex);
+	pthread_cond_signal(&priv->vsq_cond);
+	pthread_mutex_unlock(&priv->vsq_mutex);
+
+	/* Update command state */
+	STORE(cmd->state, UNVME_CMD_S_SUBMITTED);
+
 	return 0;
 }
