@@ -82,6 +82,7 @@ static struct command cmds[] = {
 	{"read",		"NVM Read command",					UNVME_NVME_CMD | UNVME_DAEMON_CMD | UNVME_DEV_CMD,	unvme_read},
 	{"write",		"NVM Write command",					UNVME_NVME_CMD | UNVME_DAEMON_CMD | UNVME_DEV_CMD,	unvme_write},
 	{"passthru",		"Passthrough command",					UNVME_NVME_CMD | UNVME_DAEMON_CMD | UNVME_DEV_CMD,	unvme_passthru},
+	{"cancel",		"Cancel an I/O command (NVMe 2.x)",			UNVME_NVME_CMD | UNVME_DAEMON_CMD | UNVME_DEV_CMD,	unvme_cancel},
 	{"format",		"Format NVM",						UNVME_NVME_CMD | UNVME_DAEMON_CMD | UNVME_DEV_CMD,	unvme_format},
 	{"virt-mgmt",		"NVM Virtualization Management Command",		UNVME_NVME_CMD | UNVME_DAEMON_CMD | UNVME_DEV_CMD,	unvme_virt_mgmt},
 	{"primary-ctrl-caps",	"Identify Primary Controller Capability",		UNVME_NVME_CMD | UNVME_DAEMON_CMD | UNVME_DEV_CMD,	unvme_id_primary_ctrl_caps},

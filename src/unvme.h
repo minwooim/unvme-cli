@@ -247,6 +247,7 @@ int unvme_create_ns(int argc, char *argv[], struct unvme_msg *msg);
 int unvme_delete_ns(int argc, char *argv[], struct unvme_msg *msg);
 int unvme_attach_ns(int argc, char *argv[], struct unvme_msg *msg);
 int unvme_detach_ns(int argc, char *argv[], struct unvme_msg *msg);
+int unvme_cancel(int argc, char *argv[], struct unvme_msg *msg);
 
 /*
  * unvmed.c

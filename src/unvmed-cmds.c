@@ -4742,3 +4742,148 @@ out:
 	unvme_free_args(argtable);
 	return ret;
 }
+
+int unvme_cancel(int argc, char *argv[], struct unvme_msg *msg)
+{
+	const char *desc =
+		"Submit a Cancel I/O command (opcode 18h) to the given I/O\n"
+		"submission queue of the target <device>.  The Cancel command\n"
+		"requests the controller to abort a specific command (ACODE 0h)\n"
+		"or all commands for a given namespace (ACODE 1h) on the target\n"
+		"I/O SQ.  On success, prints the number of immediately aborted\n"
+		"commands (cmda) and commands eligible for deferred abort (ceda).";
+
+	struct arg_rex *dev = arg_rex1(NULL, NULL, UNVME_BDF_PATTERN,
+			"<device>", 0, "[M] Device bdf");
+	struct arg_int *sqid = arg_int1("q", "sqid", "<n>",
+			"[M] I/O Submission Queue ID to submit Cancel to");
+	struct arg_int *cid = arg_int0("c", "cid", "<n>",
+			"[O] Command ID to cancel (required for --acode=0)");
+	struct arg_dbl *nsid = arg_dbl0("n", "namespace-id", "<n>",
+			"[O] Namespace ID for multiple cancel (default: 0xFFFFFFFF = any)");
+	struct arg_int *acode = arg_int0("a", "acode", "<n>",
+			"[O] Action Code (0: single command cancel, 1: multiple command cancel, default: 0)");
+	struct arg_lit *verbose = arg_lit0("v", "verbose",
+			"[O] Print command instance verbosely in stderr after completion");
+	struct arg_lit *help = arg_lit0("h", "help", "Show help message");
+	struct arg_end *end = arg_end(UNVME_ARG_MAX_ERROR);
+	void *argtable[] = {dev, sqid, cid, nsid, acode, verbose, help, end};
+
+	struct unvme *u;
+	struct unvme_sq *usq;
+	struct unvme_cmd *cmd;
+	union nvme_cmd sqe = {0, };
+	uint16_t target_cid;
+	uint16_t target_sqid;
+	uint32_t target_nsid;
+	uint8_t target_acode;
+	uint32_t cmda, ceda;
+	int ret;
+
+	arg_intv(cid) = 0;
+	arg_dblv(nsid) = 0xFFFFFFFF;
+	arg_intv(acode) = 0;
+
+	unvme_parse_args_locked(argc, argv, argtable, help, end, desc);
+
+	u = unvmed_get(arg_strv(dev));
+	if (!u) {
+		unvme_pr_err("%s is not added to unvmed\n", arg_strv(dev));
+		ret = ENODEV;
+		goto out;
+	}
+
+	target_acode = (uint8_t)arg_intv(acode);
+	if (target_acode == 0 && !arg_boolv(cid)) {
+		unvme_pr_err("--cid is required for single command cancel (--acode=0)\n");
+		ret = EINVAL;
+		goto out;
+	}
+
+	usq = unvmed_sq_get(u, arg_intv(sqid));
+	if (!usq) {
+		unvme_pr_err("failed to get iosq(qid=%d)\n", arg_intv(sqid));
+		ret = ENOMEDIUM;
+		goto out;
+	}
+
+	unvmed_sq_enter(usq);
+	if (!unvmed_sq_ready(usq)) {
+		unvme_pr_err("usq(qid=%d) is not enabled\n", unvmed_sq_id(usq));
+
+		unvmed_sq_exit(usq);
+		errno = ENOMEDIUM;
+		ret = errno;
+		goto usq;
+	}
+
+	cmd = unvmed_alloc_cmd_nodata(u, usq, NULL);
+	if (!cmd) {
+		unvme_pr_err("failed to allocate a command instance\n");
+
+		unvmed_sq_exit(usq);
+		ret = errno;
+		goto usq;
+	}
+
+	target_sqid = (uint16_t)arg_intv(sqid);
+	target_nsid = (uint32_t)arg_dblv(nsid);
+
+	/*
+	 * For single command cancel (ACODE=0): CID is the target command.
+	 * For multiple command cancel (ACODE=1): CDW10[31:16] must be FFFFh.
+	 */
+	if (target_acode == 0)
+		target_cid = (uint16_t)arg_intv(cid);
+	else
+		target_cid = 0xFFFF;
+
+	sqe.cid = cmd->cid;
+	sqe.opcode = 0x18;
+	sqe.nsid = cpu_to_le32(target_nsid);
+	/*
+	 * CDW10[31:16]: CID of the command to cancel (FFFFh for multiple)
+	 * CDW10[15:0]:  SQID (must equal the SQ this Cancel is submitted to)
+	 */
+	sqe.cdw10 = cpu_to_le32(((uint32_t)target_cid << 16) | target_sqid);
+	/*
+	 * CDW11[1:0]: ACODE (0h = single command cancel, 1h = multiple)
+	 */
+	sqe.cdw11 = cpu_to_le32(target_acode & 0x3);
+
+	if (unvmed_cmd_prep(cmd, &sqe, NULL, 0) < 0) {
+		unvme_pr_err("failed to prepare Cancel command\n");
+
+		unvmed_sq_exit(usq);
+		ret = errno;
+		goto cmd;
+	}
+
+	if (arg_boolv(verbose))
+		unvme_pr_sqe(&cmd->sqe);
+
+	cmd->flags |= UNVMED_CMD_F_WAKEUP_ON_CQE;
+	unvmed_cmd_post(cmd, &cmd->sqe, cmd->flags);
+	unvmed_sq_exit(usq);
+
+	unvmed_cmd_wait(cmd);
+	ret = unvmed_cqe_status(&cmd->cqe);
+
+	if ((ret >= 0 && arg_boolv(verbose)) || ret > 0)
+		unvme_pr_cqe(&cmd->cqe);
+
+	if (!ret) {
+		cmda = le32_to_cpu(cmd->cqe.dw0) & 0xFFFF;
+		ceda = (le32_to_cpu(cmd->cqe.dw0) >> 16) & 0xFFFF;
+		unvme_pr("cmda=%u ceda=%u\n", cmda, ceda);
+	} else if (ret < 0)
+		unvme_pr_err("failed to cancel command\n");
+
+cmd:
+	unvmed_cmd_put(cmd);
+usq:
+	unvmed_sq_put(u, usq);
+out:
+	unvme_free_args(argtable);
+	return ret;
+}
