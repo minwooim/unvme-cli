@@ -785,6 +785,23 @@ int unvmed_get_nslist(struct unvme *u, struct unvme_ns **nslist);
 int unvmed_init_ns(struct unvme *u, uint32_t nsid, void *identify);
 
 /**
+ * unvmed_init_idctrl - Initialize controller identify fields
+ * @u: &struct unvme
+ * @identify: identify controller data structure (can be NULL)
+ *
+ * Issue an Identify Controller admin command and cache selected fields from
+ * the response into @u->ctrl.idctrl.  Currently cached fields:
+ *
+ *   - ``mdts``: Maximum Data Transfer Size (byte 77)
+ *
+ * If @identify is given with non-NULL, the Identify Controller command is
+ * skipped and the provided buffer is used directly.
+ *
+ * Return: ``0`` on success, otherwise ``-1`` with ``errno`` set.
+ */
+int unvmed_init_idctrl(struct unvme *u, void *identify);
+
+/**
  * unvmed_init_meta_ns - Initialize namespace instance with metadata info
  * @u: &struct unvme
  * @nsid: namespace identifier

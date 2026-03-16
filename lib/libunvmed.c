@@ -944,6 +944,31 @@ static int __unvmed_id_ns(struct unvme *u, uint32_t nsid,
 	return 0;
 }
 
+int unvmed_init_idctrl(struct unvme *u, void *identify)
+{
+	struct nvme_id_ctrl *id_ctrl = identify;
+
+	if (!id_ctrl) {
+		pgmap((void **)&id_ctrl, sizeof(struct nvme_id_ctrl));
+		if (!id_ctrl) {
+			unvmed_log_err("failed to allocate a buffer");
+			return -1;
+		}
+
+		if (__unvmed_id_ctrl(u, id_ctrl)) {
+			pgunmap(id_ctrl, sizeof(*id_ctrl));
+			return -1;
+		}
+	}
+
+	u->ctrl.idctrl.mdts = id_ctrl->mdts;
+
+	if (id_ctrl != identify)
+		pgunmap(id_ctrl, sizeof(*id_ctrl));
+
+	return 0;
+}
+
 int unvmed_init_ns(struct unvme *u, uint32_t nsid, void *identify)
 {
 	struct nvme_id_ns *id_ns = identify;
