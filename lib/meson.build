@@ -1,3 +1,17 @@
+project('libunvmed', 'c',
+        version: '1.0.0',
+        license: ['LGPL-2.1-or-later', 'MIT'],
+        default_options: ['werror=true']
+        )
+
+static = get_option('static')
+
+vfn_lib = dependency('libvfn', version: '>=5.1.0', static: static)
+nvme_lib = dependency('libnvme', version: '>=1.8.0', static: static)
+jsonc_lib = dependency('json-c', version: '>=0.15', static: static)
+
+subdir('ccan')
+
 libunvmed_inc = include_directories('.')
 libunvmed_src = [
   'libunvmed.c',
@@ -10,7 +24,7 @@ libunvmed_hdr = [
   'libunvmed-logs.h',
 ]
 
-ver = '1.0.0'
+ver = meson.project_version()
 libunvmed_so = shared_library(
   'unvmed',
   libunvmed_src,
@@ -23,14 +37,7 @@ libunvmed_so = shared_library(
   install_dir: get_option('libdir'),
 )
 
-conf.set('LIBUNVMED_VERSION', '"' + ver + '"')
-
 install_headers(libunvmed_hdr)
-
-unvmed_dep = declare_dependency(
-  include_directories:  [ccan_inc, libunvmed_inc],
-  link_with: libunvmed_so
-)
 
 pkgconfig = import('pkgconfig')
 pkgconfig.generate(

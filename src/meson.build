@@ -19,7 +19,7 @@ executable(
   dependencies: [vfn_lib, nvme_lib, jsonc_lib, unvmed_dep],
   link_with: [ccan_lib, argtable3_lib],
   link_whole: [fio_lib],
-  include_directories: [inc, ccan_inc, argtable3_inc, libunvmed_inc],
+  include_directories: [inc, ccan_inc, argtable3_inc],
   install: true,
   install_dir: get_option('bindir'),
 )

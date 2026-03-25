@@ -58,7 +58,25 @@ endif
 nvme_lib = dependency('libnvme', version: '>=1.8.0', static: static)
 jsonc_lib = dependency('json-c', version: '>=0.15', static: static)
 
-subdir('ccan')
+libunvmed_path = get_option('with-libunvmed')
+if libunvmed_path != ''
+  unvmed_dep = declare_dependency(
+    # It will search libunvmed.so* in the given directory with no recursive search.
+    # To make sure that libunvmed.so* to be in <path>/lib directory, give '--libdir=lib'
+    # when you run meson setup for lib/.
+    dependencies: c.find_library('unvmed', dirs: [libunvmed_path + '/lib']),
+    include_directories: include_directories(libunvmed_path + '/include')
+  )
+  # Try to get version from pkg-config in the given directory
+  pc = run_command('pkg-config', '--modversion', 'libunvmed',
+    env: {'PKG_CONFIG_PATH': libunvmed_path + '/lib/pkgconfig'},
+    check: false)
+  conf.set('LIBUNVMED_VERSION', '"' + (pc.returncode() == 0 ? pc.stdout().strip() : 'unknown') + '"')
+else
+  unvmed_dep = dependency('libunvmed', version: '>=1.0.0', static: static)
+  conf.set('LIBUNVMED_VERSION', '"' + unvmed_dep.version() + '"')
+endif
+
+subdir('lib/ccan')
 subdir('argtable3')
-subdir('lib')
 subdir('src')

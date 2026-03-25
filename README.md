@@ -63,6 +63,32 @@ $ file fio
 fio: ELF 64-bit LSB shared object, x86-64, version 1 (SYSV), dynamically linked ...
 ```
 
+### libunvmed
+
+`libunvmed` (in `lib/`) is a standalone meson project and must be built and
+installed before building `unvme-cli`.
+
+```bash
+cd lib
+meson setup build --prefix=<install-prefix> --libdir=lib
+meson install -C build
+cd ..
+```
+
+If installing to a non-system prefix (e.g. `~/opt/libunvmed`), set
+`PKG_CONFIG_PATH` so that the root build can find the library:
+
+```bash
+export PKG_CONFIG_PATH=<install-prefix>/lib/pkgconfig:$PKG_CONFIG_PATH
+```
+
+Alternatively, pass the installed prefix explicitly with `-Dwith-libunvmed=`:
+
+```bash
+# install to ~/opt/libunvmed with --libdir=lib
+meson setup build -Dwith-libunvmed=~/opt/libunvmed
+```
+
 ### unvme-cli
 
 ```bash

@@ -2,7 +2,6 @@ conf.set('UNVME_FIO', '')
 
 fio_inc = []
 fio_inc += include_directories(fio)
-fio_inc += libunvmed_inc
 
 fio_src = [
   'fio.c',

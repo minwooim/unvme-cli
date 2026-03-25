@@ -4,3 +4,7 @@ option('with-libvfn', type: 'string', value: '', description:
         'libvfn installed directory to build with.  Give <path> of the following command: ' +
         '`meson setup build --libdir=lib --prefix=<path> && meson install -C build`. ' +
         'If you want to build it with libvfn installed in the current system, give an empty string.')
+option('with-libunvmed', type: 'string', value: '', description:
+        'libunvmed installed directory to build with.  Give <path> of the following command: ' +
+        '`cd lib && meson setup build --libdir=lib --prefix=<path> && meson install -C build`. ' +
+        'If empty, libunvmed will be auto-detected via pkg-config; if not found, it will be built from source.')
