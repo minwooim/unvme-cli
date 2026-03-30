@@ -2233,6 +2233,52 @@ int unvmed_virt_mgmt(struct unvme_cmd *cmd, uint32_t cntlid, uint32_t rt,
 		     uint32_t act, uint32_t nr);
 
 /**
+ * unvmed_cmd_prep_fw_download - Prepare Firmware Image Download command instance
+ * @cmd: command instance (&struct unvme_cmd)
+ * @numd: number of dwords to transfer minus 1 (zero-based)
+ * @ofst: dword offset where this portion should be placed in the firmware image
+ * @iov: scatter gather list for firmware image data
+ * @nr_iov: number of scatter gather list entries
+ *
+ * Return: ``0`` on success, otherwise ``-1`` with ``errno`` set.
+ */
+int unvmed_cmd_prep_fw_download(struct unvme_cmd *cmd, uint32_t numd,
+				uint32_t ofst, struct iovec *iov, int nr_iov);
+
+/**
+ * unvmed_fw_download - Firmware Image Download command
+ * @cmd: command instance (&struct unvme_cmd)
+ * @numd: number of dwords to transfer minus 1 (zero-based)
+ * @ofst: dword offset where this portion should be placed in the firmware image
+ * @iov: scatter gather list for firmware image data
+ * @nr_iov: number of scatter gather list entries
+ */
+int unvmed_fw_download(struct unvme_cmd *cmd, uint32_t numd, uint32_t ofst,
+		       struct iovec *iov, int nr_iov);
+
+/**
+ * unvmed_cmd_prep_fw_activate - Prepare Firmware Activate (Commit) command instance
+ * @cmd: command instance (&struct unvme_cmd)
+ * @slot: firmware slot to activate (0: controller chooses, 1-7)
+ * @action: commit action (0-3, 7)
+ * @bpid: boot partition ID (0 or 1)
+ *
+ * Return: ``0`` on success, otherwise ``-1`` with ``errno`` set.
+ */
+int unvmed_cmd_prep_fw_activate(struct unvme_cmd *cmd, uint8_t slot,
+				uint8_t action, uint8_t bpid);
+
+/**
+ * unvmed_fw_activate - Firmware Activate (Commit) command
+ * @cmd: command instance (&struct unvme_cmd)
+ * @slot: firmware slot to activate (0: controller chooses, 1-7)
+ * @action: commit action (0-3, 7)
+ * @bpid: boot partition ID (0 or 1)
+ */
+int unvmed_fw_activate(struct unvme_cmd *cmd, uint8_t slot, uint8_t action,
+		       uint8_t bpid);
+
+/**
  * unvmed_cmd_prep_id_primary_ctrl_caps - Prepare Identify Primary Controller
  *					  command instance
  * @cmd: command instance (&struct unvme_cmd)

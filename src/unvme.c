@@ -83,6 +83,8 @@ static struct command cmds[] = {
 	{"write",		"NVM Write command",					UNVME_NVME_CMD | UNVME_DAEMON_CMD | UNVME_DEV_CMD,	unvme_write},
 	{"passthru",		"Passthrough command",					UNVME_NVME_CMD | UNVME_DAEMON_CMD | UNVME_DEV_CMD,	unvme_passthru},
 	{"format",		"Format NVM",						UNVME_NVME_CMD | UNVME_DAEMON_CMD | UNVME_DEV_CMD,	unvme_format},
+	{"fw-download",		"Firmware Image Download",				UNVME_NVME_CMD | UNVME_DAEMON_CMD | UNVME_DEV_CMD,	unvme_fw_download},
+	{"fw-activate",		"Firmware Activate (Commit)",				UNVME_NVME_CMD | UNVME_DAEMON_CMD | UNVME_DEV_CMD,	unvme_fw_activate},
 	{"virt-mgmt",		"NVM Virtualization Management Command",		UNVME_NVME_CMD | UNVME_DAEMON_CMD | UNVME_DEV_CMD,	unvme_virt_mgmt},
 	{"primary-ctrl-caps",	"Identify Primary Controller Capability",		UNVME_NVME_CMD | UNVME_DAEMON_CMD | UNVME_DEV_CMD,	unvme_id_primary_ctrl_caps},
 	{"list-secondary",	"Identify Secondary Controller List",			UNVME_NVME_CMD | UNVME_DAEMON_CMD | UNVME_DEV_CMD,	unvme_id_secondary_ctrl_list},

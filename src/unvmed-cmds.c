@@ -4794,3 +4794,270 @@ out:
 	unvme_free_args(argtable);
 	return ret;
 }
+
+int unvme_fw_download(int argc, char *argv[], struct unvme_msg *msg)
+{
+	const char *desc =
+		"Submit Firmware Image Download admin command(s) to download a firmware\n"
+		"image to the given <device>.  The firmware image is transferred in chunks\n"
+		"determined by --xfer size (default: controller's maximum transfer size).\n";
+
+	struct arg_rex *dev = arg_rex1(NULL, NULL, UNVME_BDF_PATTERN, "<device>", 0, "[M] Device bdf");
+	struct arg_file *fw = arg_file1("f", "fw", "<file>", "[M] Firmware image file to download");
+	struct arg_int *xfer = arg_int0("x", "xfer", "<n>", "[O] Transfer chunk size in bytes (default: max transfer size)");
+	struct arg_int *offset = arg_int0("o", "offset", "<n>", "[O] Starting dword offset (default: 0)");
+	struct arg_lit *verbose = arg_lit0("v", "verbose", "[O] Print command instance verbosely in stderr after completion");
+	struct arg_lit *help = arg_lit0("h", "help", "Show help message");
+	struct arg_end *end = arg_end(UNVME_ARG_MAX_ERROR);
+	void *argtable[] = {dev, fw, xfer, offset, verbose, help, end};
+
+	__unvme_free char *filepath = NULL;
+	struct unvme *u;
+	const int sqid = 0;
+	struct unvme_sq *usq;
+	struct unvme_cmd *cmd;
+	void *fw_buf = NULL;
+	void *chunk_buf;
+	ssize_t fw_size;
+	ssize_t xfer_size;
+	ssize_t chunk_len;
+	uint32_t dw_offset;
+	struct stat st;
+	int ret = 0;
+
+	arg_intv(xfer) = 0;
+	arg_intv(offset) = 0;
+
+	unvme_parse_args_locked(argc, argv, argtable, help, end, desc);
+
+	u = unvmed_get(arg_strv(dev));
+	if (!u) {
+		unvme_pr_err("%s is not added to unvmed\n", arg_strv(dev));
+		ret = ENODEV;
+		goto out;
+	}
+
+	filepath = unvme_get_filepath(unvme_msg_pwd(msg), arg_filev(fw));
+
+	if (stat(filepath, &st)) {
+		unvme_pr_err("failed to stat firmware file %s\n", filepath);
+		ret = errno;
+		goto out;
+	}
+	fw_size = st.st_size;
+
+	if (arg_boolv(xfer)) {
+		xfer_size = arg_intv(xfer);
+	} else {
+		xfer_size = unvmed_get_max_xfer_size(u);
+		if (xfer_size < 0) {
+			unvme_pr_err("failed to get max transfer size\n");
+			ret = errno;
+			goto out;
+		}
+	}
+
+	if (!xfer_size || xfer_size % 4) {
+		unvme_pr_err("invalid transfer chunk size %zd\n", xfer_size);
+		ret = EINVAL;
+		goto out;
+	}
+
+	fw_buf = malloc(fw_size);
+	if (!fw_buf) {
+		ret = ENOMEM;
+		goto out;
+	}
+
+	if (unvme_read_file(filepath, fw_buf, fw_size)) {
+		unvme_pr_err("failed to read firmware file %s\n", filepath);
+		ret = ENOENT;
+		goto fw_buf;
+	}
+
+	usq = unvmed_sq_get(u, sqid);
+	if (!usq) {
+		unvme_pr_err("failed to get admin sq\n");
+		ret = ENOMEDIUM;
+		goto fw_buf;
+	}
+
+	dw_offset = (uint32_t)arg_intv(offset);
+
+	for (ssize_t sent = 0; sent < fw_size; sent += xfer_size) {
+		ssize_t chunk_size = fw_size - sent < xfer_size ?
+				     fw_size - sent : xfer_size;
+		uint32_t numd = (uint32_t)(chunk_size / 4) - 1;
+		struct iovec iov;
+
+		chunk_len = unvmed_pgmap(u, &chunk_buf, chunk_size);
+		if (chunk_len < 0) {
+			unvme_pr_err("failed to allocate chunk buffer\n");
+			ret = errno;
+			goto usq;
+		}
+
+		memcpy(chunk_buf, fw_buf + sent, chunk_size);
+
+		unvmed_sq_enter(usq);
+		if (!unvmed_sq_ready(usq)) {
+			unvme_pr_err("usq(qid=%d) is not enabled\n", unvmed_sq_id(usq));
+
+			unvmed_sq_exit(usq);
+			errno = ENOMEDIUM;
+			ret = errno;
+			unvmed_pgunmap(chunk_buf);
+			goto usq;
+		}
+
+		cmd = unvmed_alloc_cmd(u, usq, NULL, chunk_buf, chunk_len);
+		if (!cmd) {
+			unvme_pr_err("failed to allocate a command instance\n");
+
+			unvmed_sq_exit(usq);
+			ret = errno;
+			unvmed_pgunmap(chunk_buf);
+			goto usq;
+		}
+
+		iov = (struct iovec) {
+			.iov_base = chunk_buf,
+			.iov_len = chunk_size,
+		};
+
+		if (unvmed_cmd_prep_fw_download(cmd, numd, dw_offset, &iov, 1) < 0) {
+			unvme_pr_err("failed to prepare Firmware Image Download command\n");
+
+			unvmed_sq_exit(usq);
+			ret = errno;
+			unvmed_cmd_put(cmd);
+			unvmed_pgunmap(chunk_buf);
+			goto usq;
+		}
+
+		if (arg_boolv(verbose))
+			unvme_pr_sqe(&cmd->sqe);
+
+		cmd->flags |= UNVMED_CMD_F_WAKEUP_ON_CQE;
+		unvmed_cmd_post(cmd, &cmd->sqe, cmd->flags);
+		unvmed_sq_exit(usq);
+
+		unvmed_cmd_wait(cmd);
+		ret = unvmed_cqe_status(&cmd->cqe);
+
+		if ((ret >= 0 && arg_boolv(verbose)) || ret > 0)
+			unvme_pr_cqe(&cmd->cqe);
+
+		unvmed_cmd_put(cmd);
+		unvmed_pgunmap(chunk_buf);
+
+		if (ret) {
+			if (ret < 0)
+				unvme_pr_err("failed to download firmware\n");
+			goto usq;
+		}
+
+		dw_offset += (uint32_t)(chunk_size / 4);
+	}
+
+usq:
+	unvmed_sq_put(u, usq);
+fw_buf:
+	free(fw_buf);
+out:
+	unvme_free_args(argtable);
+	return ret;
+}
+
+int unvme_fw_activate(int argc, char *argv[], struct unvme_msg *msg)
+{
+	const char *desc =
+		"Submit a Firmware Activate (Commit) admin command to the given <device>.\n"
+		"This command is used to activate a previously downloaded firmware image\n"
+		"from one of the firmware slots.\n";
+
+	struct arg_rex *dev = arg_rex1(NULL, NULL, UNVME_BDF_PATTERN, "<device>", 0, "[M] Device bdf");
+	struct arg_int *slot = arg_int1("s", "slot", "<n>", "[M] Firmware slot to activate (0: controller chooses, 1-7)");
+	struct arg_int *action = arg_int1("a", "action", "<n>", "[M] Commit action (*0: Download to slot, 1: Download and activate, 2: Activate scheduled at reset, 3: Activate immediately, 7: Boot partition)");
+	struct arg_int *bpid = arg_int0("b", "bpid", "<n>", "[O] Boot partition ID (*0 or 1)");
+	struct arg_lit *verbose = arg_lit0("v", "verbose", "[O] Print command instance verbosely in stderr after completion");
+	struct arg_lit *help = arg_lit0("h", "help", "Show help message");
+	struct arg_end *end = arg_end(UNVME_ARG_MAX_ERROR);
+	void *argtable[] = {dev, slot, action, bpid, verbose, help, end};
+
+	struct unvme *u;
+	const int sqid = 0;
+	struct unvme_sq *usq;
+	struct unvme_cmd *cmd;
+	int ret;
+
+	arg_intv(bpid) = 0;
+
+	unvme_parse_args_locked(argc, argv, argtable, help, end, desc);
+
+	u = unvmed_get(arg_strv(dev));
+	if (!u) {
+		unvme_pr_err("%s is not added to unvmed\n", arg_strv(dev));
+		ret = ENODEV;
+		goto out;
+	}
+
+	usq = unvmed_sq_get(u, sqid);
+	if (!usq) {
+		unvme_pr_err("failed to get admin sq\n");
+		ret = ENOMEDIUM;
+		goto out;
+	}
+
+	unvmed_sq_enter(usq);
+	if (!unvmed_sq_ready(usq)) {
+		unvme_pr_err("usq(qid=%d) is not enabled\n", unvmed_sq_id(usq));
+
+		unvmed_sq_exit(usq);
+		errno = ENOMEDIUM;
+		ret = errno;
+		goto usq;
+	}
+
+	cmd = unvmed_alloc_cmd_nodata(u, usq, NULL);
+	if (!cmd) {
+		unvme_pr_err("failed to allocate a command instance\n");
+
+		unvmed_sq_exit(usq);
+		ret = errno;
+		goto usq;
+	}
+
+	if (unvmed_cmd_prep_fw_activate(cmd, (uint8_t)arg_intv(slot),
+			(uint8_t)arg_intv(action), (uint8_t)arg_intv(bpid)) < 0) {
+		unvme_pr_err("failed to prepare Firmware Activate command\n");
+
+		unvmed_sq_exit(usq);
+		ret = errno;
+		goto cmd;
+	}
+
+	if (arg_boolv(verbose))
+		unvme_pr_sqe(&cmd->sqe);
+
+	cmd->flags |= UNVMED_CMD_F_WAKEUP_ON_CQE;
+	unvmed_cmd_post(cmd, &cmd->sqe, cmd->flags);
+	unvmed_sq_exit(usq);
+
+	unvmed_cmd_wait(cmd);
+	ret = unvmed_cqe_status(&cmd->cqe);
+
+	if ((ret >= 0 && arg_boolv(verbose)) || ret > 0)
+		unvme_pr_cqe(&cmd->cqe);
+
+	if (ret < 0)
+		unvme_pr_err("failed to activate firmware\n");
+
+cmd:
+	unvmed_cmd_put(cmd);
+usq:
+	unvmed_sq_put(u, usq);
+out:
+	unvme_free_args(argtable);
+	return ret;
+}

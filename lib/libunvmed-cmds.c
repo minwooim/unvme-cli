@@ -890,6 +890,59 @@ int unvmed_virt_mgmt(struct unvme_cmd *cmd, uint32_t cntlid, uint32_t rt,
 	return unvmed_cmd_issue_and_wait(cmd);
 }
 
+int unvmed_cmd_prep_fw_download(struct unvme_cmd *cmd, uint32_t numd,
+				uint32_t ofst, struct iovec *iov, int nr_iov)
+{
+	union nvme_cmd *sqe = &cmd->sqe;
+
+	sqe->opcode = nvme_admin_download_fw;
+	sqe->cdw10 = cpu_to_le32(numd);
+	sqe->cdw11 = cpu_to_le32(ofst);
+	sqe->cid = cmd->cid;
+
+	if (__unvmed_mapv_prp(cmd, &cmd->sqe, iov, nr_iov)) {
+		unvmed_log_err("failed to map iovec for prp");
+		return -1;
+	}
+
+	return 0;
+}
+
+int unvmed_fw_download(struct unvme_cmd *cmd, uint32_t numd, uint32_t ofst,
+		       struct iovec *iov, int nr_iov)
+{
+	if (unvmed_cmd_prep_fw_download(cmd, numd, ofst, iov, nr_iov) < 0) {
+		unvmed_log_err("failed to prepare Firmware Image Download command");
+		return -1;
+	}
+
+	return unvmed_cmd_issue_and_wait(cmd);
+}
+
+int unvmed_cmd_prep_fw_activate(struct unvme_cmd *cmd, uint8_t slot,
+				uint8_t action, uint8_t bpid)
+{
+	union nvme_cmd *sqe = &cmd->sqe;
+
+	sqe->opcode = nvme_admin_activate_fw;
+	sqe->cdw10 = cpu_to_le32(((uint32_t)bpid << 31) |
+				 ((action & 0x7) << 3) | (slot & 0x7));
+	sqe->cid = cmd->cid;
+
+	return 0;
+}
+
+int unvmed_fw_activate(struct unvme_cmd *cmd, uint8_t slot, uint8_t action,
+		       uint8_t bpid)
+{
+	if (unvmed_cmd_prep_fw_activate(cmd, slot, action, bpid) < 0) {
+		unvmed_log_err("failed to prepare Firmware Activate command");
+		return -1;
+	}
+
+	return unvmed_cmd_issue_and_wait(cmd);
+}
+
 int unvmed_cmd_prep_id_primary_ctrl_caps(struct unvme_cmd *cmd,
 					 struct iovec *iov, int nr_iov,
 					 uint32_t cntlid)
