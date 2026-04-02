@@ -1,5 +1,7 @@
 fs = import('fs')
 
+subdir('standalone')
+
 fio = get_option('with-fio')
 
 if fio != ''
